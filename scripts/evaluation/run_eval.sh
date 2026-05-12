@@ -7,13 +7,17 @@
 # on the validation benchmark (9,861 queries) and MAIR OOD subsets
 # (869 queries).
 #
+# Datasets are downloaded automatically from HuggingFace:
+#   - anonymousauthor01/emnlp-2026-ifr-train-val-set
+#   - anonymousauthor01/emnlp-2026-ifr-mair-ood
+#
 # Prerequisites:
 #   1. Create a virtual environment and install dependencies:
 #        python -m venv .venv
 #        source .venv/bin/activate
 #        pip install -r requirements.txt
 #
-#   2. Set your HuggingFace token (required to download the model):
+#   2. Set your HuggingFace token if the model/datasets are private or gated:
 #        export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 #      Generate one at: https://huggingface.co/settings/tokens
 #
@@ -29,13 +33,13 @@
 set -euo pipefail
 
 # ---- Environment variables ----
-# HuggingFace token: required to download model weights.
+# HuggingFace token: required if the model or dataset repositories are gated.
 # Set this before running, or uncomment and paste your token below:
 # export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
-if [ -z "${HF_TOKEN:-}" ]; then
-    echo "WARNING: HF_TOKEN is not set."
-    echo "  The model download may fail if the repository is gated."
+if [ -z "${HF_TOKEN:-}" ] && [ -z "${HUGGINGFACE_HUB_TOKEN:-}" ]; then
+    echo "WARNING: HF_TOKEN / HUGGINGFACE_HUB_TOKEN is not set."
+    echo "  Downloads will work only if the model and dataset repositories are public."
     echo "  Generate a token at: https://huggingface.co/settings/tokens"
     echo "  Then: export HF_TOKEN=\"hf_...\""
     echo ""
@@ -48,48 +52,36 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 # export HF_HOME="/path/to/large/disk/.hf_cache"
 
 # ---- Configuration ----
-MODEL_PATH="anonymousauthor01/instruction_following_reranker"
+MODEL_PATH="${MODEL_PATH:-anonymousauthor01/instruction_following_reranker}"
+VAL_DATASET_ID="${VAL_DATASET_ID:-anonymousauthor01/emnlp-2026-ifr-train-val-set}"
+MAIR_DATASET_ID="${MAIR_DATASET_ID:-anonymousauthor01/emnlp-2026-ifr-mair-ood}"
 
 # Paths relative to repo root
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/../.."
-VAL_JSONL="${REPO_ROOT}/datasets/train-val-set/val.jsonl"
-MAIR_ROOT="${REPO_ROOT}/datasets/MAIR_OOD"
-OUT_DIR="${REPO_ROOT}/results"
+DATA_DIR="${DATA_DIR:-${REPO_ROOT}/datasets}"
+OUT_DIR="${OUT_DIR:-${REPO_ROOT}/results}"
 
-mkdir -p "${OUT_DIR}"
-
-# ---- Verify prerequisites ----
-if [ ! -f "${VAL_JSONL}" ]; then
-    echo "ERROR: val.jsonl not found at ${VAL_JSONL}"
-    echo "  Make sure you are running from the repo root directory."
-    exit 1
-fi
-
-if [ ! -d "${MAIR_ROOT}" ]; then
-    echo "WARNING: MAIR_OOD directory not found at ${MAIR_ROOT}"
-    echo "  Will evaluate on validation set only."
-    MAIR_FLAG=""
-else
-    MAIR_FLAG="--mair_root ${MAIR_ROOT}"
-fi
+mkdir -p "${DATA_DIR}" "${OUT_DIR}"
 
 echo "============================================================"
 echo "  Instruction-Following Reranker — Evaluation"
 echo "============================================================"
 echo ""
-echo "  Model:    ${MODEL_PATH}"
-echo "  Val set:  ${VAL_JSONL}"
-echo "  MAIR:     ${MAIR_ROOT}"
-echo "  Output:   ${OUT_DIR}"
-echo "  GPU:      CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+echo "  Model:       ${MODEL_PATH}"
+echo "  Val HF repo: ${VAL_DATASET_ID}"
+echo "  MAIR HF repo:${MAIR_DATASET_ID}"
+echo "  Data dir:    ${DATA_DIR}"
+echo "  Output:      ${OUT_DIR}"
+echo "  GPU:         CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo ""
 
 # ---- Run evaluation ----
 python "${SCRIPT_DIR}/evaluate.py" \
   --model_path "${MODEL_PATH}" \
-  --val_jsonl "${VAL_JSONL}" \
-  ${MAIR_FLAG} \
+  --data_dir "${DATA_DIR}" \
+  --val_dataset_id "${VAL_DATASET_ID}" \
+  --mair_dataset_id "${MAIR_DATASET_ID}" \
   --out_dir "${OUT_DIR}" \
   --k 6 \
   --bf16 \
@@ -100,3 +92,4 @@ echo ""
 echo "============================================================"
 echo "  Done. Results saved to ${OUT_DIR}/evaluation_results.json"
 echo "============================================================"
+

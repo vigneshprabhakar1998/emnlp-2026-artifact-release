@@ -7,10 +7,14 @@ Evaluates the instruction-following reranker on:
   (1) Validation benchmark (9,861 queries across 8 datasets)
   (2) MAIR OOD benchmark (869 queries across 11 subsets)
 
+By default, this script downloads both evaluation datasets from HuggingFace:
+  - anonymousauthor01/emnlp-2026-ifr-train-val-set
+  - anonymousauthor01/emnlp-2026-ifr-mair-ood
+
 Reports nDCG@6, MRR@6 with bootstrap 95% CIs, per-dataset breakdown.
 
 Requirements:
-  pip install torch transformers datasets numpy
+  pip install torch transformers datasets huggingface_hub numpy
 
 Hardware:
   Any GPU with >=4GB VRAM (V100, A100, H100, etc.)
@@ -19,6 +23,13 @@ Hardware:
 Usage:
   python evaluate.py \
     --model_path anonymousauthor01/instruction_following_reranker \
+    --data_dir datasets \
+    --out_dir results \
+    --bf16
+
+Optional local/offline usage:
+  python evaluate.py \
+    --model_path /path/to/model \
     --val_jsonl datasets/train-val-set/val.jsonl \
     --mair_root datasets/MAIR_OOD \
     --out_dir results \
@@ -33,7 +44,8 @@ import random
 import time
 import numpy as np
 from collections import defaultdict
-from typing import List, Dict, Optional, Any
+from pathlib import Path
+from typing import List, Dict, Optional
 
 import torch
 
@@ -57,6 +69,90 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+# ======================================================================
+# HuggingFace dataset download helpers
+# ======================================================================
+DEFAULT_VAL_DATASET_ID = "anonymousauthor01/emnlp-2026-ifr-train-val-set"
+DEFAULT_MAIR_DATASET_ID = "anonymousauthor01/emnlp-2026-ifr-mair-ood"
+
+
+def hf_token() -> Optional[str]:
+    """Use either HF_TOKEN or HUGGINGFACE_HUB_TOKEN when available."""
+    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+
+
+def snapshot_dataset(repo_id: str, local_dir: str, force_download: bool = False) -> str:
+    """Download a HuggingFace dataset repo if it is not already present."""
+    from huggingface_hub import snapshot_download
+
+    local_path = Path(local_dir)
+    marker_files = list(local_path.rglob("*")) if local_path.exists() else []
+    if marker_files and not force_download:
+        print(f"  Using cached dataset at {local_path}")
+        return str(local_path)
+
+    print(f"  Downloading dataset {repo_id} -> {local_path}")
+    snapshot_download(
+        repo_id=repo_id,
+        repo_type="dataset",
+        local_dir=str(local_path),
+        local_dir_use_symlinks=False,
+        token=hf_token(),
+        force_download=force_download,
+    )
+    return str(local_path)
+
+
+def find_val_jsonl(root: str) -> str:
+    """Find val.jsonl under a downloaded train/val dataset repo."""
+    root_path = Path(root)
+    candidates = [
+        root_path / "val.jsonl",
+        root_path / "train-val-set" / "val.jsonl",
+        root_path / "datasets" / "train-val-set" / "val.jsonl",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+
+    matches = sorted(root_path.rglob("val.jsonl"))
+    if matches:
+        return str(matches[0])
+
+    raise FileNotFoundError(
+        f"Could not find val.jsonl under {root_path}. "
+        "Check that the HF dataset repo was downloaded correctly."
+    )
+
+
+def resolve_mair_root(root: str) -> str:
+    """
+    Resolve the MAIR root containing docs/ and queries/.
+    Supports either:
+      root/docs/... and root/queries/...
+    or:
+      root/MAIR_OOD/docs/... and root/MAIR_OOD/queries/...
+    """
+    root_path = Path(root)
+    candidates = [
+        root_path,
+        root_path / "MAIR_OOD",
+        root_path / "datasets" / "MAIR_OOD",
+    ]
+    for c in candidates:
+        if (c / "docs").is_dir() and (c / "queries").is_dir():
+            return str(c)
+
+    for c in root_path.rglob("*"):
+        if c.is_dir() and (c / "docs").is_dir() and (c / "queries").is_dir():
+            return str(c)
+
+    raise FileNotFoundError(
+        f"Could not find MAIR docs/ and queries/ directories under {root_path}. "
+        "Check that the HF dataset repo was downloaded correctly."
+    )
 
 
 # ======================================================================
@@ -176,7 +272,7 @@ MAIR_SUBSETS = [
 
 
 def load_mair_data(mair_root: str) -> List[Dict]:
-    """Load MAIR OOD evaluation subsets."""
+    """Load MAIR OOD evaluation subsets from a local snapshot."""
     from datasets import load_from_disk
 
     rows = []
@@ -214,7 +310,7 @@ def load_mair_data(mair_root: str) -> List[Dict]:
                 seen.add(did)
                 cands.append({"text": txt, "label": float(x.get("score", 0) or 0)})
 
-            # Pad with negatives if fewer than 6 candidates
+            # Pad with negatives if fewer than 6 candidates.
             if len(cands) < 6:
                 pool = [d for d in doc_ids if str(d) not in seen]
                 rng.shuffle(pool)
@@ -253,11 +349,11 @@ class RerankerScorer:
 
         self.device = device
         self.tok = AutoTokenizer.from_pretrained(
-            model_path, trust_remote_code=True, use_fast=True)
+            model_path, trust_remote_code=True, use_fast=True, token=hf_token())
         if self.tok.pad_token is None:
             self.tok.pad_token = self.tok.eos_token
 
-        cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True, token=hf_token())
         has_auto_map = (
             hasattr(cfg, "auto_map")
             and isinstance(cfg.auto_map, dict)
@@ -267,21 +363,24 @@ class RerankerScorer:
         if has_auto_map:
             from transformers.dynamic_module_utils import get_class_from_dynamic_module
             ref = cfg.auto_map["AutoModelForSequenceClassification"]
-            cls = get_class_from_dynamic_module(ref, model_path)
+            cls = get_class_from_dynamic_module(ref, model_path, token=hf_token())
             self.model = cls.from_pretrained(
-                model_path, trust_remote_code=True,
+                model_path,
+                trust_remote_code=True,
                 torch_dtype=(torch.bfloat16 if bf16 else None),
+                token=hf_token(),
             ).to(device).eval()
             print(f"  Loaded via auto_map: {type(self.model).__name__}")
         else:
             from transformers import AutoModelForSequenceClassification
             self.model = AutoModelForSequenceClassification.from_pretrained(
-                model_path, trust_remote_code=True,
+                model_path,
+                trust_remote_code=True,
                 torch_dtype=(torch.bfloat16 if bf16 else None),
+                token=hf_token(),
             ).to(device).eval()
-            print(f"  Loaded via AutoModelForSequenceClassification")
+            print("  Loaded via AutoModelForSequenceClassification")
 
-        # Report VRAM usage
         if torch.cuda.is_available():
             vram = torch.cuda.max_memory_allocated(device) / 1e9
             print(f"  VRAM used: {vram:.1f} GB")
@@ -314,7 +413,7 @@ class RerankerScorer:
 # ======================================================================
 # Main evaluation
 # ======================================================================
-def evaluate(rows: List[Dict], scorer: RerankerScorer, k: int = 6):
+def evaluate(rows: List[Dict], scorer: RerankerScorer, k: int = 6, max_len: int = 512):
     """Score all queries, return per-query metrics and dataset labels."""
     results = []
     skipped = 0
@@ -329,7 +428,7 @@ def evaluate(rows: List[Dict], scorer: RerankerScorer, k: int = 6):
 
         instruction = str(row.get("instruction", "") or "")
         query = str(row.get("query", "") or "")
-        scores = scorer.score(instruction, query, texts)
+        scores = scorer.score(instruction, query, texts, max_len=max_len)
         order = sorted(range(len(scores)), key=lambda j: scores[j], reverse=True)
 
         results.append({
@@ -341,7 +440,7 @@ def evaluate(rows: List[Dict], scorer: RerankerScorer, k: int = 6):
         if (idx + 1) % 1000 == 0:
             elapsed = time.time() - t0
             print(f"  Scored {idx + 1}/{len(rows)} "
-                  f"({elapsed:.0f}s, {(idx + 1) / elapsed:.0f} q/s)")
+                  f"({elapsed:.0f}s, {(idx + 1) / max(elapsed, 1e-9):.0f} q/s)")
 
     elapsed = time.time() - t0
     print(f"  Done: {len(results)} scored, {skipped} skipped, {elapsed:.0f}s")
@@ -387,10 +486,25 @@ def main():
     ap.add_argument("--model_path", required=True,
                     help="HuggingFace model ID or local path "
                          "(e.g. anonymousauthor01/instruction_following_reranker)")
-    ap.add_argument("--val_jsonl", required=True,
-                    help="Path to val.jsonl (9,861 queries)")
+
+    # New default HF-backed workflow.
+    ap.add_argument("--data_dir", default="./datasets",
+                    help="Directory where HF dataset snapshots are cached/downloaded")
+    ap.add_argument("--val_dataset_id", default=DEFAULT_VAL_DATASET_ID,
+                    help="HF dataset repo containing val.jsonl")
+    ap.add_argument("--mair_dataset_id", default=DEFAULT_MAIR_DATASET_ID,
+                    help="HF dataset repo containing MAIR_OOD docs/ and queries/")
+    ap.add_argument("--force_download", action="store_true",
+                    help="Force re-download of HF dataset snapshots")
+
+    # Backward-compatible local/offline overrides.
+    ap.add_argument("--val_jsonl", default="",
+                    help="Optional local path to val.jsonl. If omitted, downloaded from HF.")
     ap.add_argument("--mair_root", default="",
-                    help="Path to MAIR_OOD directory containing docs/ and queries/")
+                    help="Optional local path to MAIR_OOD directory. If omitted, downloaded from HF.")
+    ap.add_argument("--skip_mair", action="store_true",
+                    help="Only evaluate the validation set")
+
     ap.add_argument("--out_dir", default="./results",
                     help="Directory for output JSON")
     ap.add_argument("--k", type=int, default=6,
@@ -406,6 +520,7 @@ def main():
 
     set_seed(args.seed)
     os.makedirs(args.out_dir, exist_ok=True)
+    os.makedirs(args.data_dir, exist_ok=True)
 
     if args.device:
         device = torch.device(args.device)
@@ -413,15 +528,33 @@ def main():
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
+    # ---- Resolve/download data ----
+    data_dir = Path(args.data_dir)
+    if args.val_jsonl:
+        val_jsonl = args.val_jsonl
+    else:
+        val_snapshot_dir = data_dir / "train-val-set"
+        snapshot_dataset(args.val_dataset_id, str(val_snapshot_dir), args.force_download)
+        val_jsonl = find_val_jsonl(str(val_snapshot_dir))
+
+    mair_root = ""
+    if not args.skip_mair:
+        if args.mair_root:
+            mair_root = resolve_mair_root(args.mair_root)
+        else:
+            mair_snapshot_dir = data_dir / "MAIR_OOD"
+            snapshot_dataset(args.mair_dataset_id, str(mair_snapshot_dir), args.force_download)
+            mair_root = resolve_mair_root(str(mair_snapshot_dir))
+
     # ---- Load data ----
-    print(f"\nLoading validation set: {args.val_jsonl}")
-    val_rows = read_jsonl(args.val_jsonl)
+    print(f"\nLoading validation set: {val_jsonl}")
+    val_rows = read_jsonl(val_jsonl)
     print(f"  {len(val_rows)} queries")
 
     mair_rows = []
-    if args.mair_root and os.path.isdir(args.mair_root):
-        print(f"\nLoading MAIR OOD: {args.mair_root}")
-        mair_rows = load_mair_data(args.mair_root)
+    if mair_root:
+        print(f"\nLoading MAIR OOD: {mair_root}")
+        mair_rows = load_mair_data(mair_root)
         print(f"  {len(mair_rows)} total MAIR queries")
 
     # ---- Load model ----
@@ -434,31 +567,33 @@ def main():
     print(f"{'=' * 60}")
 
     print("\nScoring validation set...")
-    val_results = evaluate(val_rows, scorer, args.k)
+    val_results = evaluate(val_rows, scorer, args.k, args.max_len)
     val_summary = print_results(val_results, args.k, "VALIDATION")
 
-    # Per-dataset breakdown
     by_dataset = defaultdict(list)
     for r in val_results:
         by_dataset[r["dataset"]].append(r)
 
     print(f"\n  --- PER-DATASET VALIDATION BREAKDOWN ---")
-    print(f"  {'Dataset':<25} {'n':>6} {'nDCG@6':>10} {'MRR@6':>10}")
+    print(f"  {'Dataset':<25} {'n':>6} {f'nDCG@{args.k}':>10} {f'MRR@{args.k}':>10}")
     ds_summary = {}
     for ds in sorted(by_dataset.keys()):
         ds_res = by_dataset[ds]
         nd = np.mean([r["ndcg"] for r in ds_res])
         mr = np.mean([r["mrr"] for r in ds_res])
         print(f"  {ds:<25} {len(ds_res):>6} {nd:>10.4f} {mr:>10.4f}")
-        ds_summary[ds] = {"n": len(ds_res), f"ndcg@{args.k}": round(nd, 4),
-                          f"mrr@{args.k}": round(mr, 4)}
+        ds_summary[ds] = {
+            "n": len(ds_res),
+            f"ndcg@{args.k}": round(nd, 4),
+            f"mrr@{args.k}": round(mr, 4),
+        }
 
     # ---- Evaluate MAIR ----
     mair_summary = {}
     mair_ds_summary = {}
     if mair_rows:
         print("\nScoring MAIR OOD set...")
-        mair_results = evaluate(mair_rows, scorer, args.k)
+        mair_results = evaluate(mair_rows, scorer, args.k, args.max_len)
         mair_summary = print_results(mair_results, args.k, "MAIR (OOD)")
 
         mair_by_ds = defaultdict(list)
@@ -466,20 +601,29 @@ def main():
             mair_by_ds[r["dataset"]].append(r)
 
         print(f"\n  --- PER-SUBSET MAIR BREAKDOWN ---")
-        print(f"  {'Subset':<25} {'n':>6} {'nDCG@6':>10} {'MRR@6':>10}")
+        print(f"  {'Subset':<25} {'n':>6} {f'nDCG@{args.k}':>10} {f'MRR@{args.k}':>10}")
         for ds in sorted(mair_by_ds.keys()):
             ds_res = mair_by_ds[ds]
             nd = np.mean([r["ndcg"] for r in ds_res])
             mr = np.mean([r["mrr"] for r in ds_res])
             print(f"  {ds:<25} {len(ds_res):>6} {nd:>10.4f} {mr:>10.4f}")
-            mair_ds_summary[ds] = {"n": len(ds_res), f"ndcg@{args.k}": round(nd, 4),
-                                    f"mrr@{args.k}": round(mr, 4)}
+            mair_ds_summary[ds] = {
+                "n": len(ds_res),
+                f"ndcg@{args.k}": round(nd, 4),
+                f"mrr@{args.k}": round(mr, 4),
+            }
 
     # ---- Save results ----
     output = {
         "model_path": args.model_path,
         "k": args.k,
         "seed": args.seed,
+        "data": {
+            "val_dataset_id": args.val_dataset_id if not args.val_jsonl else None,
+            "val_jsonl": val_jsonl,
+            "mair_dataset_id": args.mair_dataset_id if mair_root and not args.mair_root else None,
+            "mair_root": mair_root or None,
+        },
         "validation": val_summary,
         "validation_per_dataset": ds_summary,
     }
@@ -488,22 +632,23 @@ def main():
         output["mair_per_subset"] = mair_ds_summary
 
     out_path = os.path.join(args.out_dir, "evaluation_results.json")
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2)
     print(f"\nResults saved to {out_path}")
 
     # ---- Print expected results for verification ----
     print(f"\n{'=' * 60}")
-    print(f"  EXPECTED RESULTS (from the paper)")
+    print("  EXPECTED RESULTS (from the paper)")
     print(f"{'=' * 60}")
-    print(f"  Validation nDCG@6: 0.7624 [0.755, 0.770]")
-    print(f"  Validation MRR@6:  0.7475 [0.740, 0.755]")
+    print("  Validation nDCG@6: 0.7624 [0.755, 0.770]")
+    print("  Validation MRR@6:  0.7475 [0.740, 0.755]")
     if mair_summary:
-        print(f"  MAIR nDCG@6:       0.7670 [0.745, 0.789]")
-        print(f"  MAIR MRR@6:        0.8289 [0.807, 0.851]")
-    print(f"\n  Small numerical differences (<0.001) may arise from")
-    print(f"  floating-point precision across hardware/library versions.")
+        print("  MAIR nDCG@6:       0.7670 [0.745, 0.789]")
+        print("  MAIR MRR@6:        0.8289 [0.807, 0.851]")
+    print("\n  Small numerical differences (<0.001) may arise from")
+    print("  floating-point precision across hardware/library versions.")
 
 
 if __name__ == "__main__":
     main()
+
