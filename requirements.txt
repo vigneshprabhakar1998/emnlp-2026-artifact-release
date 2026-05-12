@@ -1,0 +1,19 @@
+# Requirements for evaluating the Distilled-1B instruction-following reranker
+#
+# These are the exact package versions used for all reported results.
+# Frozen from the working evaluation environment on NVIDIA H200.
+#
+# Setup:
+#   python -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r requirements.txt
+
+# --- Core dependencies (pinned) ---
+torch==2.5.1
+transformers==5.1.0
+datasets==4.5.0
+numpy==2.4.1
+huggingface_hub==1.4.1
+tokenizers==0.22.2
+safetensors==0.7.0
+accelerate==1.12.0
