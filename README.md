@@ -239,8 +239,8 @@ The Stage 2 distillation script (`scripts/training/`) is included in this reposi
 | Component | Minimum Hardware | Approximate Time |
 |-----------|------------------|------------------|
 | **Stage 1:** Teacher off-policy GRPO | 2× H200 (1 for actor, 1 for LLM judge OSS-20B) | ~3 days 23 hours |
-| **Stage 2:** Student on-policy distillation | 1× H100 (or 2× A100 80GB) | ~4 hours 50 minutes |
-| **Full evaluation suite** | 1× V100/A100/H100 (≥4 GB VRAM) | ~20 minutes |
+| **Stage 2:** Student on-policy distillation | 1× H200 (or 2× A100 80GB) | ~4 hours 50 minutes |
+| **Full evaluation suite** | 1× V100/A100/H100/H200 (≥4 GB VRAM) | ~20 minutes |
 | **Total reported pipeline** | — | ~101 H200 GPU-hours |
 
 ## What Will Be Released Upon Acceptance
@@ -283,23 +283,26 @@ The 11 MAIR subsets used for out-of-distribution evaluation span:
 | Financial domain retrieval | FiQA |
 | Argumentative / viewpoint retrieval | ArguAna, Touche |
 
-## Expected Output
-
-After running `bash scripts/evaluation/run_eval.sh`, you should see output similar to:
-
-```text
-  --- VALIDATION (9861 queries) ---
-  nDCG@6: 0.7624  SD=0.3730  95% CI [0.7550, 0.7700]
-  MRR@6:  0.7475  SD=0.3885  95% CI [0.7400, 0.7550]
-
-  --- MAIR (OOD) (869 queries) ---
-  nDCG@6: 0.7670  SD=0.3274  95% CI [0.7450, 0.7890]
-  MRR@6:  0.8289  SD=0.3323  95% CI [0.8070, 0.8510]
-```
+## Note
 
 Small numerical differences (<0.001) may arise from floating-point precision across hardware and library versions.
 
 ## Citation
 
-*Citation will be provided upon acceptance.*
+If you use this model, please cite:
+
+```bibtex
+@inproceedings{prabhakar2026onpolicy,
+  title     = {On-Policy Distillation Meets Off-Policy {GRPO}:
+               Training Compact Instruction-Following Rerankers},
+  author    = {Prabhakar, Vignesh and Pan, Jialing and
+               Ankisettipalli, Anil Babu},
+  booktitle = {Findings of the Association for Computational Linguistics:
+               EMNLP 2026},
+  year      = {2026},
+  address   = {Budapest, Hungary},
+  publisher = {Association for Computational Linguistics},
+  note      = {To appear}
+}
+```
 
