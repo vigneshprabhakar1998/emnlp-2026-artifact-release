@@ -68,7 +68,7 @@ out of the box against the public base reranker.
 
 ## Hardware
 
-- **1× H100** (or 2× A100 80GB), bfloat16.
+- **1× H200** (or 2× A100 80GB), bfloat16.
 - ~4h50m for one epoch over the training split.
 
 ## Outputs
