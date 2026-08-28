@@ -1,6 +1,6 @@
 # On-Policy Distillation Meets Off-Policy GRPO: Training Sparse Instruction-Following Rerankers that Beat Their Teachers
 
-**Anonymous EMNLP 2026 Submission**
+**EMNLP 2026 Findings Artifact Release**
 
 ---
 
