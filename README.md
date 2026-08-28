@@ -201,8 +201,7 @@ The Distilled-1B checkpoint is hosted at:
 **[https://huggingface.co/anonymousauthor01/instruction_following_reranker](https://huggingface.co/anonymousauthor01/instruction_following_reranker)**
 
 - **Architecture:** Llama-Nemotron-Rerank-1B-v2 (sequence classification)
-- **Parameters:** 1.24B
-- **License:** Apache 2.0
+- **Parameters:** 1B
 - **Training:** On-policy GRPO distillation from a 4B teacher (Stage 2 of the paper)
 
 ## Datasets
@@ -241,7 +240,6 @@ The Stage 2 distillation script (`scripts/training/`) is included in this reposi
 | **Stage 1:** Teacher off-policy GRPO | 2× H200 (1 for actor, 1 for LLM judge OSS-20B) | ~3 days 23 hours |
 | **Stage 2:** Student on-policy distillation | 1× H200 (or 2× A100 80GB) | ~4 hours 50 minutes |
 | **Full evaluation suite** | 1× V100/A100/H100/H200 (≥4 GB VRAM) | ~20 minutes |
-| **Total reported pipeline** | — | ~101 H200 GPU-hours |
 
 ## What Will Be Released Upon Acceptance
 
